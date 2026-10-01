@@ -480,6 +480,7 @@
 
     function pathFromPoints(points) {
         if (typeof points === 'string') return decodePolyline(points);
+        if (points && Array.isArray(points.coordinates)) return pathFromPoints(points.coordinates);
         if (!Array.isArray(points)) return [];
         return points.map(pair => {
             if (!Array.isArray(pair)) return pointOf(pair);
