@@ -2,6 +2,7 @@
    through the existing image upload path. */
 (() => {
     const KEY_STORAGE = 'epd-vietmap-key';
+    const DISPLAY_STORAGE = 'epd-nav-display';
     const PROFILES = {
         da14585_2_13_212x104: [212, 104],
         da14585_2_13_250x128: [250, 128],
@@ -46,6 +47,10 @@
 
     function $(id) {
         return document.getElementById(id);
+    }
+
+    function readKey() {
+        return ($('nav-api-key')?.value || '').replace(/\s+/g, '');
     }
 
     function setStatus(message, isError = false) {
@@ -172,11 +177,69 @@
         return lines;
     }
 
-    function drawArrow(ctx, maneuver, cx, cy, size) {
+    function displayState() {
+        const scale = Number($('nav-text-scale')?.value);
+        return {
+            arrow: $('nav-show-arrow')?.checked !== false,
+            distance: $('nav-show-distance')?.checked !== false,
+            instruction: $('nav-show-instruction')?.checked !== false,
+            time: $('nav-show-time')?.checked !== false,
+            remain: $('nav-show-remain')?.checked !== false,
+            invert: !!$('nav-invert')?.checked,
+            scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
+            layout: $('nav-layout')?.value === 'top' ? 'top' : 'side'
+        };
+    }
+
+    function saveDisplay() {
+        try {
+            localStorage.setItem(DISPLAY_STORAGE, JSON.stringify(displayState()));
+        } catch (storageError) {
+            // Private browsing can reject storage; the controls still apply.
+        }
+    }
+
+    function restoreDisplay() {
+        let saved = null;
+        try {
+            saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE) || 'null');
+        } catch (storageError) {
+            saved = null;
+        }
+        if (!saved || typeof saved !== 'object') return;
+        const check = (id, value) => {
+            const node = $(id);
+            if (node) node.checked = value !== false;
+        };
+        check('nav-show-arrow', saved.arrow);
+        check('nav-show-distance', saved.distance);
+        check('nav-show-instruction', saved.instruction);
+        check('nav-show-time', saved.time);
+        check('nav-show-remain', saved.remain);
+        const invert = $('nav-invert');
+        if (invert) invert.checked = !!saved.invert;
+        const scale = $('nav-text-scale');
+        if (scale && saved.scale) scale.value = String(saved.scale);
+        const layout = $('nav-layout');
+        if (layout && saved.layout) layout.value = saved.layout;
+    }
+
+    function footerLine(cue, options) {
+        if (cue.placeText) return (options.time || options.remain) ? cue.placeText : '';
+        if (cue.timeText || cue.remainText) {
+            const parts = [];
+            if (options.time && cue.timeText) parts.push(cue.timeText);
+            if (options.remain && cue.remainText) parts.push(cue.remainText);
+            return parts.join(' · ');
+        }
+        return (options.time || options.remain) ? (cue.footer || '') : '';
+    }
+
+    function drawArrow(ctx, maneuver, cx, cy, size, color = '#000') {
         ctx.save();
         ctx.translate(cx, cy);
-        ctx.fillStyle = '#000';
-        ctx.strokeStyle = '#000';
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
         ctx.lineWidth = Math.max(4, size * 0.13);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -227,44 +290,73 @@
 
     function renderCue(cue) {
         const { w, h } = panelSize();
+        const options = displayState();
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#fff';
+        const ink = options.invert ? '#fff' : '#000';
+        const paper = options.invert ? '#000' : '#fff';
+        ctx.fillStyle = paper;
         ctx.fillRect(0, 0, w, h);
-        ctx.strokeStyle = '#000';
+        ctx.strokeStyle = ink;
         ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.015));
         ctx.strokeRect(1, 1, w - 2, h - 2);
 
         const compact = h <= 140;
-        const arrowBox = Math.min(h - 16, Math.round(w * (compact ? 0.32 : 0.28)));
-        drawArrow(ctx, cue.maneuver, 8 + arrowBox / 2, h / 2, arrowBox * 0.82);
+        const scale = options.scale;
+        const pad = 8;
+        const footer = footerLine(cue, options);
+        const showDistance = options.distance && !!cue.distanceText;
+        const showInstruction = options.instruction && !!cue.instruction;
+        const hasText = showDistance || showInstruction || !!footer;
+        let textX = pad;
+        let textTop = pad;
+        let textW = w - pad * 2;
 
-        const textX = arrowBox + 16;
-        const textW = w - textX - 10;
-        const distanceSize = compact ? Math.max(18, Math.round(h * 0.24)) : Math.round(h * 0.22);
-        const instructionSize = compact ? Math.max(12, Math.round(h * 0.13)) : Math.round(h * 0.075);
-        const footerSize = compact ? 11 : Math.round(h * 0.055);
-        ctx.fillStyle = '#000';
+        if (options.arrow && options.layout === 'top') {
+            const arrowBox = Math.min(
+                Math.round(h * (hasText ? 0.36 : 0.76)),
+                w - 16
+            );
+            drawArrow(ctx, cue.maneuver, w / 2, pad + arrowBox / 2, arrowBox * 0.78, ink);
+            textTop = pad + arrowBox + 2;
+        } else if (options.arrow) {
+            const arrowBox = Math.min(h - 16, Math.round(w * (compact ? 0.34 : 0.28)));
+            drawArrow(ctx, cue.maneuver, pad + arrowBox / 2, h / 2, arrowBox * (hasText ? 0.82 : 1.05), ink);
+            if (hasText) {
+                textX = arrowBox + 16;
+                textW = w - textX - 10;
+            }
+        }
+
+        ctx.fillStyle = ink;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.font = `bold ${distanceSize}px sans-serif`;
-        ctx.fillText(cue.distanceText || '', textX, 8, textW);
-
-        ctx.font = `bold ${instructionSize}px sans-serif`;
-        const footerTop = h - footerSize - 8;
-        const instructionTop = 12 + distanceSize;
-        const lineHeight = instructionSize + 3;
-        const maxLines = Math.max(1, Math.min(compact ? 3 : 4,
-            Math.floor((footerTop - instructionTop - 4) / lineHeight)));
-        const lines = wrapLines(ctx, cue.instruction || '', textW, maxLines);
-        lines.forEach((line, index) => {
-            ctx.fillText(line, textX, instructionTop + index * lineHeight);
-        });
-
-        ctx.font = `${footerSize}px sans-serif`;
-        ctx.fillText(cue.footer || '', textX, h - footerSize - 8, textW);
+        const distanceSize = Math.max(16, Math.round((compact ? h * 0.24 : h * 0.22) * scale));
+        const instructionSize = Math.max(12, Math.round((compact ? h * 0.13 : h * 0.075) * scale));
+        const footerSize = Math.max(11, Math.round((compact ? 11 : h * 0.055) * scale));
+        const footerTop = footer ? h - footerSize - 8 : h - 8;
+        let cursorY = textTop;
+        if (showDistance && cursorY < footerTop) {
+            ctx.font = `bold ${distanceSize}px sans-serif`;
+            ctx.fillText(cue.distanceText, textX, cursorY, textW);
+            cursorY += distanceSize + 4;
+        }
+        if (showInstruction && cursorY < footerTop - 4) {
+            const size = showDistance ? instructionSize : Math.max(instructionSize, Math.round(distanceSize * 0.72));
+            ctx.font = `bold ${size}px sans-serif`;
+            const lineHeight = size + 3;
+            const maxLines = Math.max(1, Math.min(compact ? 3 : 4,
+                Math.floor((footerTop - cursorY - 2) / lineHeight)));
+            wrapLines(ctx, cue.instruction, textW, maxLines).forEach((line, index) => {
+                ctx.fillText(line, textX, cursorY + index * lineHeight);
+            });
+        }
+        if (footer) {
+            ctx.font = `${footerSize}px sans-serif`;
+            ctx.fillText(footer, textX, h - footerSize - 8, textW);
+        }
         // The panel treats any pixel above 0 as white, so gray antialiasing
         // would vanish. Snap the card to pure black and white first.
         const image = ctx.getImageData(0, 0, w, h);
@@ -297,6 +389,8 @@
             maneuver: 'turn-left',
             instruction: 'Rẽ trái vào đường Nguyễn Huệ',
             distanceText: '120 m',
+            timeText: 'Còn 18 phút',
+            remainText: '4.6 km',
             footer: 'Còn 18 phút · 4.6 km'
         };
     }
@@ -372,6 +466,9 @@
             maneuver: arrived ? 'arrive' : inferManeuver(step.maneuver, step.instruction),
             instruction: arrived ? 'Đã đến nơi' : step.instruction,
             distanceText: arrived ? '' : formatDistance(remainMeters),
+            timeText: arrived ? '' : `Còn ${formatDuration(seconds)}`,
+            remainText: arrived ? '' : formatDistance(meters),
+            placeText: arrived ? destinationText : '',
             footer: arrived ? destinationText : `Còn ${formatDuration(seconds)} · ${formatDistance(meters)}`
         };
     }
@@ -438,7 +535,18 @@
             response = await fetch(url, { signal });
         } catch (error) {
             if (error.name === 'AbortError') throw error;
-            throw new Error('Không gọi được Vietmap. Kiểm tra mạng.');
+            // A rejected key comes back as 401 with no CORS header, so the
+            // browser reports the same "Failed to fetch" as a dead network.
+            let reachable = false;
+            try {
+                const probe = await fetch(url, { mode: 'no-cors', signal });
+                reachable = probe.type === 'opaque';
+            } catch (probeError) {
+                if (probeError.name === 'AbortError') throw probeError;
+            }
+            throw new Error(reachable
+                ? 'Vietmap từ chối khóa. Hãy dán lại Services key, không kèm dấu cách.'
+                : 'Không gọi được Vietmap. Kiểm tra mạng.');
         }
         if (response.status === 401)
             throw new Error('Khóa Vietmap không đúng. Hãy dùng Services key, không phải khóa bản đồ.');
@@ -581,7 +689,6 @@
         params.set('vehicle', travelMode === 'car' ? 'car' : 'motorcycle');
         params.set('points_encoded', 'false');
         params.set('alternative', 'false');
-        if (Number.isFinite(origin.heading)) params.set('heading', String(Math.round(origin.heading)));
         const data = await vietmapGet('https://maps.vietmap.vn/api/route/v4?' + params);
         if (data.code && data.code !== 'OK') throw new Error(routeError(data));
         if (!data.paths || !data.paths[0]) throw new Error('Vietmap không trả lộ trình.');
@@ -672,7 +779,7 @@
     }
 
     async function beginNavigation() {
-        apiKey = ($('nav-api-key')?.value || '').trim();
+        apiKey = readKey();
         travelMode = $('nav-mode')?.value || 'motorcycle';
         if (!apiKey) {
             setStatus('Hãy dán khóa Vietmap trước.', true);
@@ -713,11 +820,9 @@
     }
 
     function positionPoint(position) {
-        const heading = position.coords.heading;
         return {
             lat: position.coords.latitude,
-            lng: position.coords.longitude,
-            heading: Number.isFinite(heading) ? heading : null
+            lng: position.coords.longitude
         };
     }
 
@@ -740,7 +845,7 @@
 
     async function suggestDestination() {
         const text = ($('nav-destination')?.value || '').trim();
-        apiKey = ($('nav-api-key')?.value || '').trim();
+        apiKey = readKey();
         if (text !== pickedLabel) {
             pickedRef = '';
             destinationPoint = null;
@@ -807,7 +912,12 @@
         } catch (storageError) {
             // Leave the field empty when storage is blocked.
         }
+        restoreDisplay();
         showCue(sampleCue());
+        $('nav-display')?.addEventListener('change', () => {
+            saveDisplay();
+            window.refreshNavPreview();
+        });
         $('nav-preview-btn')?.addEventListener('click', () => {
             showCue(sampleCue());
             setStatus('Đây là mặt mẫu. Bấm gửi để đưa đúng ảnh này lên e-ink.');

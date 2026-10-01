@@ -1519,6 +1519,11 @@
             #nav-steps li { margin: 4px 0; }
             #nav-suggestions { list-style: none; margin: -6px 0 10px; padding: 0; border: 1px solid #d7e0f5; border-radius: 8px; background: #fff; }
             #nav-suggestions button { width: 100%; margin: 0; text-align: left; background: #fff; color: #1f2937; border-radius: 0; box-shadow: none; }
+            #nav-display { margin: 4px 0 12px; padding: 8px 12px 10px; border: 1px solid #d7e0f5; border-radius: 8px; background: #fff; }
+            #nav-display legend { padding: 0 6px; font-weight: 700; }
+            #nav-display-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+            #nav-display-grid .nav-span { grid-column: 1 / -1; }
+            @media (max-width: 560px) { #nav-display-grid { grid-template-columns: 1fr; } }
         </style>
         <h2>Chỉ đường lên e-ink</h2>
         <p>Trang lấy GPS, hỏi lộ trình Vietmap theo xe máy hoặc ô tô, vẽ bước rẽ rồi gửi bằng ảnh Bluetooth. E-ink refresh chậm, nên màn chỉ nhận ảnh mới khi hướng rẽ đổi. Vietmap không có kẹt xe trực tiếp.</p>
@@ -1539,6 +1544,30 @@
                 </select>
             </label>
             <label><input id="nav-distance-updates" type="checkbox"> Gửi lại lên e-ink khi khoảng cách qua mốc mới</label>
+            <fieldset id="nav-display">
+                <legend>Mặt trên e-ink</legend>
+                <div id="nav-display-grid">
+                    <label><input id="nav-show-arrow" type="checkbox" checked> Mũi tên</label>
+                    <label><input id="nav-show-distance" type="checkbox" checked> Khoảng cách tới chỗ rẽ</label>
+                    <label><input id="nav-show-instruction" type="checkbox" checked> Tên đường</label>
+                    <label><input id="nav-show-time" type="checkbox" checked> Thời gian còn lại</label>
+                    <label><input id="nav-show-remain" type="checkbox" checked> Quãng đường còn lại</label>
+                    <label><input id="nav-invert" type="checkbox"> Nền đen, chữ trắng</label>
+                    <label class="nav-span" for="nav-text-scale">Cỡ chữ
+                        <select id="nav-text-scale">
+                            <option value="0.85">Nhỏ</option>
+                            <option value="1" selected>Vừa</option>
+                            <option value="1.25">Lớn</option>
+                        </select>
+                    </label>
+                    <label class="nav-span" for="nav-layout">Bố cục
+                        <select id="nav-layout">
+                            <option value="side" selected>Mũi tên bên trái</option>
+                            <option value="top">Mũi tên phía trên</option>
+                        </select>
+                    </label>
+                </div>
+            </fieldset>
             <div class="button-group">
                 <button id="nav-start" type="button">Bắt đầu chỉ đường</button>
                 <button id="nav-stop" type="button">Dừng theo dõi</button>
