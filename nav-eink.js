@@ -177,8 +177,30 @@
         return lines;
     }
 
+    let placedBoxes = [];
+    let customPositions = null;
+    let drag = null;
+    const LAYOUT_PRESETS = {
+        side: {
+            arrow: { x: 0.2, y: 0.5 },
+            distance: { x: 0.4, y: 0.06 },
+            instruction: { x: 0.4, y: 0.36 },
+            time: { x: 0.4, y: 0.78 },
+            remain: { x: 0.72, y: 0.78 }
+        },
+        top: {
+            arrow: { x: 0.5, y: 0.24 },
+            distance: { x: 0.06, y: 0.5 },
+            instruction: { x: 0.06, y: 0.66 },
+            time: { x: 0.06, y: 0.84 },
+            remain: { x: 0.52, y: 0.84 }
+        }
+    };
+
     function displayState() {
         const scale = Number($('nav-text-scale')?.value);
+        const layoutValue = $('nav-layout')?.value;
+        const layout = layoutValue === 'top' || layoutValue === 'custom' ? layoutValue : 'side';
         return {
             arrow: $('nav-show-arrow')?.checked !== false,
             distance: $('nav-show-distance')?.checked !== false,
@@ -187,8 +209,28 @@
             remain: $('nav-show-remain')?.checked !== false,
             invert: !!$('nav-invert')?.checked,
             scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
-            layout: $('nav-layout')?.value === 'top' ? 'top' : 'side'
+            layout,
+            positions: customPositions
         };
+    }
+
+    function activePositions() {
+        const preset = LAYOUT_PRESETS[$('nav-layout')?.value === 'top' ? 'top' : 'side'];
+        if (!customPositions) return preset;
+        const merged = clonePositions(preset);
+        Object.keys(customPositions).forEach(key => {
+            const spot = customPositions[key];
+            if (spot && Number.isFinite(spot.x) && Number.isFinite(spot.y)) merged[key] = { x: spot.x, y: spot.y };
+        });
+        return merged;
+    }
+
+    function clonePositions(source) {
+        const copy = {};
+        Object.keys(source).forEach(key => {
+            copy[key] = { x: source[key].x, y: source[key].y };
+        });
+        return copy;
     }
 
     function saveDisplay() {
@@ -220,19 +262,12 @@
         if (invert) invert.checked = !!saved.invert;
         const scale = $('nav-text-scale');
         if (scale && saved.scale) scale.value = String(saved.scale);
+        customPositions = saved.positions && typeof saved.positions === 'object'
+            ? clonePositions(saved.positions)
+            : null;
         const layout = $('nav-layout');
         if (layout && saved.layout) layout.value = saved.layout;
-    }
-
-    function footerLine(cue, options) {
-        if (cue.placeText) return (options.time || options.remain) ? cue.placeText : '';
-        if (cue.timeText || cue.remainText) {
-            const parts = [];
-            if (options.time && cue.timeText) parts.push(cue.timeText);
-            if (options.remain && cue.remainText) parts.push(cue.remainText);
-            return parts.join(' · ');
-        }
-        return (options.time || options.remain) ? (cue.footer || '') : '';
+        if (layout && customPositions && saved.layout !== 'side' && saved.layout !== 'top') layout.value = 'custom';
     }
 
     function drawArrow(ctx, maneuver, cx, cy, size, color = '#000') {
@@ -291,6 +326,7 @@
     function renderCue(cue) {
         const { w, h } = panelSize();
         const options = displayState();
+        const positions = activePositions();
         const canvas = document.createElement('canvas');
         canvas.width = w;
         canvas.height = h;
@@ -305,58 +341,57 @@
 
         const compact = h <= 140;
         const scale = options.scale;
-        const pad = 8;
-        const footer = footerLine(cue, options);
-        const showDistance = options.distance && !!cue.distanceText;
-        const showInstruction = options.instruction && !!cue.instruction;
-        const hasText = showDistance || showInstruction || !!footer;
-        let textX = pad;
-        let textTop = pad;
-        let textW = w - pad * 2;
-
-        if (options.arrow && options.layout === 'top') {
-            const arrowBox = Math.min(
-                Math.round(h * (hasText ? 0.36 : 0.76)),
-                w - 16
-            );
-            drawArrow(ctx, cue.maneuver, w / 2, pad + arrowBox / 2, arrowBox * 0.78, ink);
-            textTop = pad + arrowBox + 2;
-        } else if (options.arrow) {
-            const arrowBox = Math.min(h - 16, Math.round(w * (compact ? 0.34 : 0.28)));
-            drawArrow(ctx, cue.maneuver, pad + arrowBox / 2, h / 2, arrowBox * (hasText ? 0.82 : 1.05), ink);
-            if (hasText) {
-                textX = arrowBox + 16;
-                textW = w - textX - 10;
-            }
-        }
-
-        ctx.fillStyle = ink;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'top';
         const distanceSize = Math.max(16, Math.round((compact ? h * 0.24 : h * 0.22) * scale));
         const instructionSize = Math.max(12, Math.round((compact ? h * 0.13 : h * 0.075) * scale));
         const footerSize = Math.max(11, Math.round((compact ? 11 : h * 0.055) * scale));
-        const footerTop = footer ? h - footerSize - 8 : h - 8;
-        let cursorY = textTop;
-        if (showDistance && cursorY < footerTop) {
-            ctx.font = `bold ${distanceSize}px sans-serif`;
-            ctx.fillText(cue.distanceText, textX, cursorY, textW);
-            cursorY += distanceSize + 4;
+        const boxes = [];
+        ctx.fillStyle = ink;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        function placeText(id, text, size, bold) {
+            const spot = positions[id];
+            if (!spot || !text) return;
+            ctx.font = `${bold ? 'bold ' : ''}${size}px sans-serif`;
+            const x = Math.max(4, Math.min(w - 12, spot.x * w));
+            const y = Math.max(4, Math.min(h - size - 4, spot.y * h));
+            const maxWidth = Math.max(24, w - x - 6);
+            const lineHeight = size + 2;
+            const room = Math.max(1, Math.floor((h - y - 4) / lineHeight));
+            const maxLines = Math.max(1, Math.min(id === 'instruction' ? (compact ? 3 : 4) : 2, room));
+            const lines = wrapLines(ctx, text, maxWidth, maxLines);
+            let widest = 8;
+            lines.forEach((line, index) => {
+                ctx.fillText(line, x, y + index * lineHeight);
+                widest = Math.max(widest, ctx.measureText(line).width);
+            });
+            boxes.push({ id, x, y, w: widest, h: Math.max(size, lines.length * lineHeight) });
         }
-        if (showInstruction && cursorY < footerTop - 4) {
-            const size = showDistance ? instructionSize : Math.max(instructionSize, Math.round(distanceSize * 0.72));
-            ctx.font = `bold ${size}px sans-serif`;
-            const lineHeight = size + 3;
-            const maxLines = Math.max(1, Math.min(compact ? 3 : 4,
-                Math.floor((footerTop - cursorY - 2) / lineHeight)));
-            wrapLines(ctx, cue.instruction, textW, maxLines).forEach((line, index) => {
-                ctx.fillText(line, textX, cursorY + index * lineHeight);
+
+        if (options.arrow && positions.arrow) {
+            const arrowSize = Math.max(28, Math.round(Math.min(h * 0.62, w * 0.34) * Math.min(scale, 1.15)));
+            const cx = Math.max(arrowSize / 2, Math.min(w - arrowSize / 2, positions.arrow.x * w));
+            const cy = Math.max(arrowSize / 2, Math.min(h - arrowSize / 2, positions.arrow.y * h));
+            drawArrow(ctx, cue.maneuver, cx, cy, arrowSize * 0.82, ink);
+            boxes.push({
+                id: 'arrow',
+                x: cx - arrowSize / 2,
+                y: cy - arrowSize / 2,
+                w: arrowSize,
+                h: arrowSize
             });
         }
-        if (footer) {
-            ctx.font = `${footerSize}px sans-serif`;
-            ctx.fillText(footer, textX, h - footerSize - 8, textW);
+        if (options.distance) placeText('distance', cue.distanceText, distanceSize, true);
+        if (options.instruction) placeText('instruction', cue.instruction, options.distance && cue.distanceText ? instructionSize : Math.max(instructionSize, Math.round(distanceSize * 0.72)), true);
+        if (cue.placeText && (options.time || options.remain)) {
+            placeText('time', cue.placeText, footerSize, false);
+        } else {
+            const timeLabel = options.time ? (cue.timeText || (!cue.remainText ? cue.footer : '')) : '';
+            if (timeLabel) placeText('time', timeLabel, footerSize, false);
+            if (options.remain) placeText('remain', cue.remainText, footerSize, false);
         }
+
+        placedBoxes = boxes;
         // The panel treats any pixel above 0 as white, so gray antialiasing
         // would vanish. Snap the card to pure black and white first.
         const image = ctx.getImageData(0, 0, w, h);
@@ -374,8 +409,8 @@
     function showCanvas(canvas) {
         const preview = $('nav-preview');
         if (!preview) return;
-        preview.width = canvas.width;
-        preview.height = canvas.height;
+        if (preview.width !== canvas.width) preview.width = canvas.width;
+        if (preview.height !== canvas.height) preview.height = canvas.height;
         preview.getContext('2d').drawImage(canvas, 0, 0);
     }
 
@@ -891,6 +926,56 @@
         setStatus('Đã dừng theo dõi. Màn e-ink giữ mặt chỉ đường cuối.');
     }
 
+    function canvasPoint(event, canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const width = rect.width || canvas.width;
+        const height = rect.height || canvas.height;
+        return {
+            x: (event.clientX - rect.left) * canvas.width / width,
+            y: (event.clientY - rect.top) * canvas.height / height
+        };
+    }
+
+    function bindPreviewDrag() {
+        const preview = $('nav-preview');
+        if (!preview) return;
+        preview.addEventListener('pointerdown', event => {
+            const point = canvasPoint(event, preview);
+            const hit = [...placedBoxes].reverse().find(box =>
+                point.x >= box.x - 10 && point.x <= box.x + box.w + 10 &&
+                point.y >= box.y - 10 && point.y <= box.y + box.h + 10);
+            if (!hit) return;
+            event.preventDefault();
+            if (!customPositions) customPositions = clonePositions(activePositions());
+            const spot = customPositions[hit.id];
+            if (!spot) return;
+            drag = {
+                id: hit.id,
+                dx: point.x - spot.x * preview.width,
+                dy: point.y - spot.y * preview.height
+            };
+            if (preview.setPointerCapture) preview.setPointerCapture(event.pointerId);
+            preview.classList.add('dragging');
+            const select = $('nav-layout');
+            if (select && select.value !== 'custom') select.value = 'custom';
+        });
+        preview.addEventListener('pointermove', event => {
+            if (!drag || !customPositions?.[drag.id]) return;
+            const point = canvasPoint(event, preview);
+            customPositions[drag.id].x = Math.max(0, Math.min(0.96, (point.x - drag.dx) / preview.width));
+            customPositions[drag.id].y = Math.max(0, Math.min(0.92, (point.y - drag.dy) / preview.height));
+            showCue(displayedCue || sampleCue());
+        });
+        const endDrag = () => {
+            if (!drag) return;
+            drag = null;
+            preview.classList.remove('dragging');
+            saveDisplay();
+        };
+        preview.addEventListener('pointerup', endDrag);
+        preview.addEventListener('pointercancel', endDrag);
+    }
+
     window.refreshNavPreview = function () {
         showCue(displayedCue || sampleCue());
     };
@@ -914,10 +999,19 @@
         }
         restoreDisplay();
         showCue(sampleCue());
+        $('nav-layout')?.addEventListener('change', () => {
+            const value = $('nav-layout').value;
+            if (value === 'custom') {
+                if (!customPositions) customPositions = clonePositions(activePositions());
+            } else {
+                customPositions = null;
+            }
+        });
         $('nav-display')?.addEventListener('change', () => {
             saveDisplay();
             window.refreshNavPreview();
         });
+        bindPreviewDrag();
         $('nav-preview-btn')?.addEventListener('click', () => {
             showCue(sampleCue());
             setStatus('Đây là mặt mẫu. Bấm gửi để đưa đúng ảnh này lên e-ink.');

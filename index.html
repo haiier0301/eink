@@ -1513,7 +1513,9 @@
             #tab-nav .nav-card { margin-bottom: 12px; padding: 14px; border: 1px solid #d7e0f5; border-radius: 12px; background: #f8faff; }
             #tab-nav label { display: block; margin-bottom: 10px; font-weight: 600; }
             #tab-nav input[type="checkbox"] { width: auto; min-height: 0; margin-right: 8px; }
-            #nav-preview { display: block; width: 100%; max-width: 500px; height: auto; margin: 8px auto 0; border: 1px solid #111; background: #fff; image-rendering: pixelated; }
+            #nav-preview { display: block; width: 100%; max-width: 500px; height: auto; margin: 8px auto 0; border: 1px solid #111; background: #fff; image-rendering: pixelated; touch-action: none; cursor: grab; }
+            #nav-preview.dragging { cursor: grabbing; }
+            #nav-layout-hint { margin-top: 8px; font-size: 14px; }
             #nav-status { min-height: 22px; margin-top: 10px; font-weight: 600; }
             #nav-steps { margin: 8px 0 0; padding-left: 18px; }
             #nav-steps li { margin: 4px 0; }
@@ -1560,10 +1562,11 @@
                             <option value="1.25">Lớn</option>
                         </select>
                     </label>
-                    <label class="nav-span" for="nav-layout">Bố cục
+                    <label class="nav-span" for="nav-layout">Bố cục mẫu
                         <select id="nav-layout">
                             <option value="side" selected>Mũi tên bên trái</option>
                             <option value="top">Mũi tên phía trên</option>
+                            <option value="custom">Tự chỉnh</option>
                         </select>
                     </label>
                 </div>
@@ -1576,6 +1579,7 @@
             </div>
             <div id="nav-status" role="status"></div>
             <canvas id="nav-preview" width="250" height="128"></canvas>
+            <p id="nav-layout-hint">Kéo mũi tên, số hoặc chữ trên mặt xem thử để đặt chỗ. Bố cục mẫu xếp lại từ đầu.</p>
             <ol id="nav-steps"></ol>
         </div>
     </div>
