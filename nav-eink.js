@@ -209,9 +209,16 @@
             remain: $('nav-show-remain')?.checked !== false,
             invert: !!$('nav-invert')?.checked,
             scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
+            font: navFont(),
             layout,
             positions: customPositions
         };
+    }
+
+    function navFont() {
+        const allowed = ['Arial', 'sans-serif', 'Times New Roman', 'serif', 'monospace'];
+        const value = $('nav-font')?.value;
+        return allowed.includes(value) ? value : 'Arial';
     }
 
     function activePositions() {
@@ -262,6 +269,8 @@
         if (invert) invert.checked = !!saved.invert;
         const scale = $('nav-text-scale');
         if (scale && saved.scale) scale.value = String(saved.scale);
+        const font = $('nav-font');
+        if (font && saved.font) font.value = saved.font;
         customPositions = saved.positions && typeof saved.positions === 'object'
             ? clonePositions(saved.positions)
             : null;
@@ -352,7 +361,8 @@
         function placeText(id, text, size, bold) {
             const spot = positions[id];
             if (!spot || !text) return;
-            ctx.font = `${bold ? 'bold ' : ''}${size}px sans-serif`;
+            const family = options.font.includes(' ') ? `"${options.font}"` : options.font;
+            ctx.font = `${bold ? 'bold ' : ''}${size}px ${family}`;
             const x = Math.max(4, Math.min(w - 12, spot.x * w));
             const y = Math.max(4, Math.min(h - size - 4, spot.y * h));
             const maxWidth = Math.max(24, w - x - 6);
