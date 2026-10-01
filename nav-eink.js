@@ -1,7 +1,7 @@
-/* Phone GPS + Google Directions, drawn as one e-ink frame and sent
+/* Phone GPS + Vietmap routing, drawn as one e-ink frame and sent
    through the existing image upload path. */
 (() => {
-    const KEY_STORAGE = 'epd-google-maps-key';
+    const KEY_STORAGE = 'epd-vietmap-key';
     const PROFILES = {
         da14585_2_13_212x104: [212, 104],
         da14585_2_13_250x128: [250, 128],
@@ -23,19 +23,26 @@
         'nrf52_7.5_800x480': PROFILES.nrf52_7_5_800x480
     };
 
-    let mapsPromise = null;
     let watchId = null;
     let starting = false;
     let fixChain = Promise.resolve();
     let steps = [];
     let stepIndex = 0;
+    let apiKey = '';
     let destinationText = '';
-    let travelMode = 'DRIVING';
+    let destinationPoint = null;
+    let pickedRef = '';
+    let pickedLabel = '';
+    let travelMode = 'motorcycle';
+    let suggestTimer = 0;
     let lastUploadKey = '';
     let sending = false;
     let rerouteAt = 0;
     let offRouteFixes = 0;
     let displayedCue = null;
+    let lastOrigin = null;
+    let stopRequested = false;
+    let suggestAbort = null;
 
     function $(id) {
         return document.getElementById(id);
@@ -106,12 +113,6 @@
         if (minutes < 60) return `${minutes} phút`;
         const hours = Math.floor(minutes / 60);
         return `${hours} giờ ${minutes % 60} phút`;
-    }
-
-    function stripHtml(html) {
-        const node = document.createElement('div');
-        node.innerHTML = html || '';
-        return (node.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
     function inferManeuver(maneuver, instruction) {
@@ -264,6 +265,17 @@
 
         ctx.font = `${footerSize}px sans-serif`;
         ctx.fillText(cue.footer || '', textX, h - footerSize - 8, textW);
+        // The panel treats any pixel above 0 as white, so gray antialiasing
+        // would vanish. Snap the card to pure black and white first.
+        const image = ctx.getImageData(0, 0, w, h);
+        const data = image.data;
+        for (let i = 0; i < data.length; i += 4) {
+            const dark = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114 < 170;
+            const value = dark ? 0 : 255;
+            data[i] = data[i + 1] = data[i + 2] = value;
+            data[i + 3] = 255;
+        }
+        ctx.putImageData(image, 0, 0);
         return canvas;
     }
 
@@ -348,6 +360,7 @@
     function cueFor(index, remainMeters) {
         const step = steps[index];
         if (!step) return sampleCue();
+        if (!Number.isFinite(remainMeters)) remainMeters = step.distance || 0;
         let meters = remainMeters;
         let seconds = step.distance > 0 ? step.duration * (remainMeters / step.distance) : 0;
         for (let i = index + 1; i < steps.length; i++) {
@@ -419,68 +432,178 @@
         }
     }
 
-    function loadMaps(key) {
-        if (window.google?.maps?.DirectionsService) return Promise.resolve();
-        if (mapsPromise) return mapsPromise;
-        mapsPromise = new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                mapsPromise = null;
-                reject(new Error('Không tải được Google Maps. Kiểm tra mạng và khóa API.'));
-            }, 15000);
-            window.gm_authFailure = () => {
-                clearTimeout(timer);
-                mapsPromise = null;
-                reject(new Error('Google từ chối khóa. Hãy bật Maps JavaScript API, Directions API và cho phép địa chỉ trang này.'));
-            };
-            window.__einkNavMapsReady = () => {
-                clearTimeout(timer);
-                resolve();
-            };
-            const script = document.createElement('script');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&language=vi&region=VN&callback=__einkNavMapsReady`;
-            script.async = true;
-            script.onerror = () => {
-                clearTimeout(timer);
-                mapsPromise = null;
-                reject(new Error('Không tải được Google Maps.'));
-            };
-            document.head.appendChild(script);
-        });
-        return mapsPromise;
+    async function vietmapGet(url, signal) {
+        let response;
+        try {
+            response = await fetch(url, { signal });
+        } catch (error) {
+            if (error.name === 'AbortError') throw error;
+            throw new Error('Không gọi được Vietmap. Kiểm tra mạng.');
+        }
+        if (response.status === 401)
+            throw new Error('Khóa Vietmap không đúng. Hãy dùng Services key, không phải khóa bản đồ.');
+        if (response.status === 423)
+            throw new Error('Khóa Vietmap hết hạn mức hoặc chưa bật API này.');
+        const data = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(data?.messages || data?.message || `Vietmap lỗi ${response.status}`);
+        return data;
     }
 
-    function requestRoute(origin) {
-        const service = new google.maps.DirectionsService();
-        return new Promise((resolve, reject) => {
-            service.route({
-                origin,
-                destination: destinationText,
-                travelMode: google.maps.TravelMode[travelMode] || 'DRIVING',
-                region: 'vn',
-                language: 'vi',
-                provideRouteAlternatives: false
-            }, (result, status) => {
-                if (status === 'OK' && result.routes && result.routes[0]) resolve(result.routes[0]);
-                else reject(new Error(`Google Directions: ${status}`));
-            });
-        });
+    function decodePolyline(encoded) {
+        const points = [];
+        let index = 0;
+        let lat = 0;
+        let lng = 0;
+        while (index < encoded.length) {
+            let result = 0;
+            let shift = 0;
+            let byte = 0;
+            do {
+                byte = encoded.charCodeAt(index++) - 63;
+                result |= (byte & 0x1f) << shift;
+                shift += 5;
+            } while (byte >= 0x20);
+            lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+            result = 0;
+            shift = 0;
+            do {
+                byte = encoded.charCodeAt(index++) - 63;
+                result |= (byte & 0x1f) << shift;
+                shift += 5;
+            } while (byte >= 0x20);
+            lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+            points.push({ lat: lat / 1e5, lng: lng / 1e5 });
+        }
+        return points;
     }
 
-    function adoptRoute(route) {
-        const nextSteps = [];
-        (route.legs || []).forEach(leg => {
-            (leg.steps || []).forEach(step => {
-                const path = (step.path || step.lat_lngs || []).map(pointOf).filter(Boolean);
-                nextSteps.push({
-                    instruction: stripHtml(step.instructions || step.html_instructions || 'Đi tiếp'),
-                    maneuver: step.maneuver || '',
-                    distance: step.distance?.value || 0,
-                    duration: step.duration?.value || 0,
-                    path,
-                    start: pointOf(step.start_location),
-                    end: pointOf(step.end_location)
-                });
-            });
+    function pathFromPoints(points) {
+        if (typeof points === 'string') return decodePolyline(points);
+        if (!Array.isArray(points)) return [];
+        return points.map(pair => {
+            if (!Array.isArray(pair)) return pointOf(pair);
+            const first = Number(pair[0]);
+            const second = Number(pair[1]);
+            if (!Number.isFinite(first) || !Number.isFinite(second)) return null;
+            return Math.abs(first) > 90 ? { lat: second, lng: first } : { lat: first, lng: second };
+        }).filter(Boolean);
+    }
+
+    function maneuverFromSign(sign) {
+        return {
+            '-8': 'uturn-left',
+            '-7': 'turn-slight-left',
+            '-3': 'turn-sharp-left',
+            '-2': 'turn-left',
+            '-1': 'turn-slight-left',
+            '0': 'straight',
+            '1': 'turn-slight-right',
+            '2': 'turn-right',
+            '3': 'turn-sharp-right',
+            '4': 'arrive',
+            '5': 'straight',
+            '6': 'roundabout-right',
+            '7': 'turn-slight-right',
+            '8': 'uturn-right'
+        }[String(sign)] || 'straight';
+    }
+
+    function instructionFrom(step, maneuver) {
+        const text = (step.text || '').trim();
+        const street = (step.street_name || '').trim();
+        const verb = {
+            'uturn-left': 'Quay đầu',
+            'uturn-right': 'Quay đầu',
+            'turn-sharp-left': 'Rẽ gắt trái',
+            'turn-left': 'Rẽ trái',
+            'turn-slight-left': 'Rẽ nhẹ trái',
+            straight: 'Đi thẳng',
+            'turn-slight-right': 'Rẽ nhẹ phải',
+            'turn-right': 'Rẽ phải',
+            'turn-sharp-right': 'Rẽ gắt phải',
+            arrive: 'Đã đến nơi',
+            'roundabout-right': 'Vào vòng xuyến'
+        }[maneuver] || 'Đi tiếp';
+        if (maneuver === 'arrive') return text || verb;
+        const hasVerb = /rẽ|quay|thẳng|tiếp|vòng|đích|đến/i.test(text);
+        if (text && hasVerb) return text;
+        const name = street || text;
+        return name ? `${verb} vào ${name}` : verb;
+    }
+
+    function routeError(data) {
+        const codes = {
+            ZERO_RESULTS: 'Không tìm được đường cho loại xe này.',
+            OVER_DAILY_LIMIT: 'Khóa Vietmap đã hết lượt trong ngày.',
+            INVALID_REQUEST: 'Yêu cầu chỉ đường không hợp lệ.',
+            MAX_POINTS_EXCEED: 'Quá nhiều điểm trên lộ trình.'
+        };
+        return codes[data.code] || data.messages || `Vietmap: ${data.code || 'lỗi'}`;
+    }
+
+    async function placeFromRef(ref, label) {
+        const place = await vietmapGet('https://maps.vietmap.vn/api/place/v4?' + new URLSearchParams({
+            apikey: apiKey,
+            refid: ref
+        }));
+        const lat = Number(place.lat);
+        const lng = Number(place.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng))
+            throw new Error('Vietmap không trả tọa độ của địa điểm.');
+        destinationPoint = { lat, lng };
+        destinationText = place.display || label || destinationText;
+        pickedRef = ref;
+        const field = $('nav-destination');
+        if (field && destinationText) field.value = destinationText;
+        pickedLabel = field?.value || destinationText;
+        return destinationPoint;
+    }
+
+    async function resolveDestination(origin) {
+        const typed = ($('nav-destination')?.value || '').trim();
+        if (!typed) throw new Error('Hãy nhập điểm đến.');
+        if (pickedRef && pickedLabel === typed && destinationPoint) return destinationPoint;
+        const params = new URLSearchParams({ apikey: apiKey, text: typed, display_type: '1' });
+        if (origin) params.set('focus', `${origin.lat},${origin.lng}`);
+        const results = await vietmapGet('https://maps.vietmap.vn/api/search/v4?' + params);
+        const first = Array.isArray(results) ? results[0] : null;
+        if (!first?.ref_id) throw new Error('Không tìm thấy địa điểm trên Vietmap.');
+        return placeFromRef(first.ref_id, first.display || typed);
+    }
+
+    async function requestRoute(origin) {
+        const params = new URLSearchParams();
+        params.set('apikey', apiKey);
+        params.append('point', `${origin.lat},${origin.lng}`);
+        params.append('point', `${destinationPoint.lat},${destinationPoint.lng}`);
+        params.set('vehicle', travelMode === 'car' ? 'car' : 'motorcycle');
+        params.set('points_encoded', 'false');
+        params.set('alternative', 'false');
+        if (Number.isFinite(origin.heading)) params.set('heading', String(Math.round(origin.heading)));
+        const data = await vietmapGet('https://maps.vietmap.vn/api/route/v4?' + params);
+        if (data.code && data.code !== 'OK') throw new Error(routeError(data));
+        if (!data.paths || !data.paths[0]) throw new Error('Vietmap không trả lộ trình.');
+        return data.paths[0];
+    }
+
+    function adoptRoute(path) {
+        const geometry = pathFromPoints(path.points);
+        if (geometry.length < 2) throw new Error('Vietmap không trả hình dạng đường.');
+        const nextSteps = (path.instructions || []).map(step => {
+            const start = step.interval?.[0] ?? 0;
+            const end = step.interval?.[1] ?? start;
+            const slice = geometry.slice(Math.max(0, start), Math.max(start, end) + 1);
+            const maneuver = maneuverFromSign(step.sign);
+            return {
+                instruction: instructionFrom(step, maneuver),
+                maneuver,
+                distance: step.distance || 0,
+                duration: (step.time || 0) / 1000,
+                path: slice,
+                start: slice[0] || null,
+                end: slice[slice.length - 1] || null
+            };
         });
         if (!nextSteps.length) throw new Error('Lộ trình không có bước chỉ dẫn.');
         steps = nextSteps;
@@ -490,9 +613,16 @@
         renderStepList(0);
     }
 
+    function geoMessage(error) {
+        if (error?.code === 1) return 'Chrome chưa được phép lấy vị trí. Hãy bật định vị rồi thử lại.';
+        if (error?.code === 3) return 'Hết thời gian chờ vị trí. Ra chỗ thoáng hơn rồi thử lại.';
+        return 'Không xác định được vị trí.';
+    }
+
     async function publishFix(here, forceUpload) {
+        lastOrigin = here;
         const place = locate(here);
-        const limit = travelMode === 'WALKING' ? 45 : 70;
+        const limit = travelMode === 'motorcycle' ? 55 : 70;
         if (place.cross > limit) {
             offRouteFixes += 1;
             if (offRouteFixes >= 3 && Date.now() - rerouteAt > 20000) {
@@ -541,14 +671,13 @@
     }
 
     async function beginNavigation() {
-        const key = ($('nav-api-key')?.value || '').trim();
-        destinationText = ($('nav-destination')?.value || '').trim();
-        travelMode = $('nav-mode')?.value || 'DRIVING';
-        if (!key) {
-            setStatus('Hãy dán khóa Google Maps trước.', true);
+        apiKey = ($('nav-api-key')?.value || '').trim();
+        travelMode = $('nav-mode')?.value || 'motorcycle';
+        if (!apiKey) {
+            setStatus('Hãy dán khóa Vietmap trước.', true);
             return;
         }
-        if (!destinationText) {
+        if (!($('nav-destination')?.value || '').trim()) {
             setStatus('Hãy nhập điểm đến.', true);
             return;
         }
@@ -557,36 +686,98 @@
             return;
         }
         try {
-            localStorage.setItem(KEY_STORAGE, key);
+            localStorage.setItem(KEY_STORAGE, apiKey);
         } catch (storageError) {
             // Private browsing can reject storage; the field still holds the key.
         }
-        setStatus('Đang tải Google Maps...');
-        await loadMaps(key);
-        const origin = await new Promise((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(
-                position => resolve({
-                    lat: position.coords.latitude,
-                    lng: position.coords.longitude
-                }),
-                error => reject(new Error(error.message || 'Không lấy được vị trí.')),
-                { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
-            );
-        });
-        setStatus('Đang tính lộ trình...');
+        stopRequested = false;
+        const origin = await currentPosition();
+        if (stopRequested) return;
+        setStatus('Đang tìm địa điểm...');
+        await resolveDestination(origin);
+        if (stopRequested) return;
+        setStatus('Đang tính lộ trình Vietmap...');
         adoptRoute(await requestRoute(origin));
+        if (stopRequested) return;
         await publishFix(origin, true);
+        if (stopRequested) return;
         watchId = navigator.geolocation.watchPosition(position => {
-            const here = { lat: position.coords.latitude, lng: position.coords.longitude };
+            const here = positionPoint(position);
             fixChain = fixChain.then(() => publishFix(here, false)).catch(error => {
                 setStatus(error.message || String(error), true);
             });
         }, error => {
-            setStatus(error.message || 'Mất tín hiệu vị trí.', true);
+            setStatus(geoMessage(error), true);
         }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 2000 });
     }
 
+    function positionPoint(position) {
+        const heading = position.coords.heading;
+        return {
+            lat: position.coords.latitude,
+            lng: position.coords.longitude,
+            heading: Number.isFinite(heading) ? heading : null
+        };
+    }
+
+    function currentPosition() {
+        return new Promise((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(
+                position => resolve(positionPoint(position)),
+                error => reject(new Error(geoMessage(error))),
+                { enableHighAccuracy: true, timeout: 12000, maximumAge: 5000 }
+            );
+        });
+    }
+
+    function hideSuggestions() {
+        const list = $('nav-suggestions');
+        if (!list) return;
+        list.replaceChildren();
+        list.hidden = true;
+    }
+
+    async function suggestDestination() {
+        const text = ($('nav-destination')?.value || '').trim();
+        apiKey = ($('nav-api-key')?.value || '').trim();
+        if (text !== pickedLabel) {
+            pickedRef = '';
+            destinationPoint = null;
+        }
+        if (!apiKey || text.length < 2) {
+            hideSuggestions();
+            return;
+        }
+        suggestAbort?.abort();
+        suggestAbort = new AbortController();
+        const params = new URLSearchParams({ apikey: apiKey, text, display_type: '1' });
+        if (lastOrigin) params.set('focus', `${lastOrigin.lat},${lastOrigin.lng}`);
+        const results = await vietmapGet(
+            'https://maps.vietmap.vn/api/autocomplete/v4?' + params,
+            suggestAbort.signal
+        );
+        const list = $('nav-suggestions');
+        if (!list) return;
+        list.replaceChildren();
+        (Array.isArray(results) ? results : []).slice(0, 5).forEach(item => {
+            const row = document.createElement('li');
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = item.display || item.name || item.address || '';
+            button.addEventListener('click', () => {
+                hideSuggestions();
+                placeFromRef(item.ref_id, button.textContent).catch(error => {
+                    setStatus(error.message || String(error), true);
+                });
+            });
+            row.appendChild(button);
+            list.appendChild(row);
+        });
+        list.hidden = list.children.length === 0;
+    }
+
     function stopNavigation() {
+        stopRequested = true;
         if (watchId !== null) {
             navigator.geolocation.clearWatch(watchId);
             watchId = null;
@@ -627,6 +818,22 @@
             startNavigation().catch(error => setStatus(error.message || String(error), true));
         });
         $('nav-stop')?.addEventListener('click', stopNavigation);
+        $('nav-destination')?.addEventListener('focus', () => {
+            if (lastOrigin || !navigator.geolocation) return;
+            navigator.geolocation.getCurrentPosition(position => {
+                lastOrigin = positionPoint(position);
+            }, () => {}, { enableHighAccuracy: false, maximumAge: 60000, timeout: 8000 });
+        });
+        $('nav-destination')?.addEventListener('input', () => {
+            clearTimeout(suggestTimer);
+            suggestTimer = setTimeout(() => {
+                suggestDestination().catch(error => {
+                    if (error.name === 'AbortError') return;
+                    hideSuggestions();
+                    setStatus(error.message || String(error), true);
+                });
+            }, 300);
+        });
         $('screen-size')?.addEventListener('change', () => window.refreshNavPreview());
     });
 })();

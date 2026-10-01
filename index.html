@@ -1517,22 +1517,25 @@
             #nav-status { min-height: 22px; margin-top: 10px; font-weight: 600; }
             #nav-steps { margin: 8px 0 0; padding-left: 18px; }
             #nav-steps li { margin: 4px 0; }
+            #nav-suggestions { list-style: none; margin: -6px 0 10px; padding: 0; border: 1px solid #d7e0f5; border-radius: 8px; background: #fff; }
+            #nav-suggestions button { width: 100%; margin: 0; text-align: left; background: #fff; color: #1f2937; border-radius: 0; box-shadow: none; }
         </style>
         <h2>Chỉ đường lên e-ink</h2>
-        <p>Ứng dụng Google Maps không cho trang web đọc lượt rẽ đang chạy. Trang này chạy trên Chrome của điện thoại Android: lấy GPS, hỏi lộ trình Google Directions, vẽ bước tiếp theo rồi gửi bằng đúng đường truyền ảnh Bluetooth của màn đang kết nối. E-ink refresh chậm, nên màn chỉ nhận ảnh mới khi hướng rẽ đổi.</p>
+        <p>Trang lấy GPS, hỏi lộ trình Vietmap theo xe máy hoặc ô tô, vẽ bước rẽ rồi gửi bằng ảnh Bluetooth. E-ink refresh chậm, nên màn chỉ nhận ảnh mới khi hướng rẽ đổi. Vietmap không có kẹt xe trực tiếp.</p>
+        <p>Mở trang bằng Chrome trên điện thoại Android, qua địa chỉ https. iPhone và file mở trực tiếp không kết nối được Bluetooth. Trước khi đi: kết nối e-ink ở tab cài đặt, cho phép Chrome lấy vị trí, rồi dán Services key.</p>
         <div class="nav-card">
-            <label for="nav-api-key">Khóa Google Maps JavaScript API
+            <label for="nav-api-key">Khóa Vietmap (Services key)
                 <input id="nav-api-key" type="password" autocomplete="off" placeholder="Chỉ lưu trên trình duyệt này">
             </label>
-            <p>Trong Google Cloud, bật Maps JavaScript API và Directions API. Hạn chế khóa theo địa chỉ trang này.</p>
+            <p>Đăng ký miễn phí tại <a href="https://maps.vietmap.vn/console-v2/register" target="_blank" rel="noopener">Vietmap</a>, không cần thẻ. Dùng Services key. Gói miễn phí khoảng 60.000 lượt mỗi tháng; mỗi lần tìm địa điểm và mỗi lần tính đường tính riêng một lượt.</p>
             <label for="nav-destination">Điểm đến
-                <input id="nav-destination" type="text" placeholder="Địa chỉ hoặc tên địa điểm">
+                <input id="nav-destination" type="text" placeholder="Địa chỉ hoặc tên địa điểm ở Việt Nam" autocomplete="off">
             </label>
+            <ul id="nav-suggestions" hidden></ul>
             <label for="nav-mode">Cách đi
                 <select id="nav-mode">
-                    <option value="DRIVING">Ô tô</option>
-                    <option value="BICYCLING">Xe đạp</option>
-                    <option value="WALKING">Đi bộ</option>
+                    <option value="motorcycle" selected>Xe máy</option>
+                    <option value="car">Ô tô</option>
                 </select>
             </label>
             <label><input id="nav-distance-updates" type="checkbox"> Gửi lại lên e-ink khi khoảng cách qua mốc mới</label>
