@@ -36,7 +36,6 @@
     let pickedLabel = '';
     let travelMode = 'motorcycle';
     let suggestTimer = 0;
-    let lastUploadKey = '';
     let sending = false;
     let rerouteAt = 0;
     let offRouteFixes = 0;
@@ -178,6 +177,11 @@
     }
 
     let placedBoxes = [];
+    let navFrame = null;
+    let framePaper = '';
+    let partBoxes = {};
+    let partSig = {};
+    let sentPartKeys = {};
     let customPositions = null;
     let drag = null;
     const LAYOUT_PRESETS = {
@@ -211,7 +215,22 @@
             scale: Number.isFinite(scale) && scale > 0 ? scale : 1,
             font: navFont(),
             layout,
-            positions: customPositions
+            positions: customPositions,
+            refresh: refreshFlags()
+        };
+    }
+
+    function refreshFlags() {
+        const read = (id, fallback) => {
+            const node = $(id);
+            return node ? node.checked : fallback;
+        };
+        return {
+            arrow: read('nav-refresh-arrow', true),
+            distance: read('nav-refresh-distance', false),
+            instruction: read('nav-refresh-instruction', true),
+            time: read('nav-refresh-time', false),
+            remain: read('nav-refresh-remain', false)
         };
     }
 
@@ -277,6 +296,20 @@
         const layout = $('nav-layout');
         if (layout && saved.layout) layout.value = saved.layout;
         if (layout && customPositions && saved.layout !== 'side' && saved.layout !== 'top') layout.value = 'custom';
+        if (saved.refresh && typeof saved.refresh === 'object') {
+            const refreshIds = {
+                arrow: 'nav-refresh-arrow',
+                distance: 'nav-refresh-distance',
+                instruction: 'nav-refresh-instruction',
+                time: 'nav-refresh-time',
+                remain: 'nav-refresh-remain'
+            };
+            Object.keys(refreshIds).forEach(key => {
+                const node = $(refreshIds[key]);
+                if (node && Object.prototype.hasOwnProperty.call(saved.refresh, key))
+                    node.checked = !!saved.refresh[key];
+            });
+        }
     }
 
     function drawArrow(ctx, maneuver, cx, cy, size, color = '#000') {
@@ -332,79 +365,138 @@
         ctx.restore();
     }
 
-    function renderCue(cue) {
-        const { w, h } = panelSize();
-        const options = displayState();
-        const positions = activePositions();
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        const ink = options.invert ? '#fff' : '#000';
-        const paper = options.invert ? '#000' : '#fff';
-        ctx.fillStyle = paper;
-        ctx.fillRect(0, 0, w, h);
-        ctx.strokeStyle = ink;
-        ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.015));
-        ctx.strokeRect(1, 1, w - 2, h - 2);
+    const PARTS = ['arrow', 'distance', 'instruction', 'time', 'remain'];
+    const PART_LABELS = {
+        arrow: 'mũi tên',
+        distance: 'khoảng cách',
+        instruction: 'tên đường',
+        time: 'thời gian',
+        remain: 'quãng đường'
+    };
 
+    function colorsOf(options) {
+        return {
+            ink: options.invert ? '#fff' : '#000',
+            paper: options.invert ? '#000' : '#fff'
+        };
+    }
+
+    function fontFamily(options) {
+        return options.font.includes(' ') ? `"${options.font}"` : options.font;
+    }
+
+    function partText(id, cue, options) {
+        if (!options[id]) return '';
+        if (id === 'distance') return cue.distanceText || '';
+        if (id === 'instruction') return cue.instruction || '';
+        if (cue.placeText && (options.time || options.remain))
+            return id === 'time' ? cue.placeText : '';
+        if (id === 'time') return cue.timeText || (!cue.remainText ? (cue.footer || '') : '');
+        if (id === 'remain') return cue.remainText || '';
+        return '';
+    }
+
+    function partSignature(id, cue, options) {
+        if (id === 'arrow') return options.arrow ? (cue.maneuver || 'straight') : 'off';
+        return options[id] ? (partText(id, cue, options) || 'empty') : 'off';
+    }
+
+    function signaturesFor(cue) {
+        const options = displayState();
+        const next = {};
+        PARTS.forEach(id => { next[id] = partSignature(id, cue, options); });
+        return next;
+    }
+
+    function changedPartIds(cue) {
+        const next = signaturesFor(cue);
+        const ids = PARTS.filter(id => next[id] !== partSig[id]);
+        partSig = next;
+        return ids;
+    }
+
+    function padBox(box, pad = 3) {
+        return { x: box.x - pad, y: box.y - pad, w: box.w + pad * 2, h: box.h + pad * 2 };
+    }
+
+    function intersects(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    function measureTextPart(ctx, id, text, size, bold, positions, options, w, h) {
+        const spot = positions[id];
+        if (!spot || !text) return null;
+        ctx.font = `${bold ? 'bold ' : ''}${size}px ${fontFamily(options)}`;
+        const x = Math.max(4, Math.min(w - 12, spot.x * w));
+        const y = Math.max(4, Math.min(h - size - 4, spot.y * h));
+        const maxWidth = Math.max(24, w - x - 6);
+        const lineHeight = size + 2;
+        const room = Math.max(1, Math.floor((h - y - 4) / lineHeight));
+        const maxLines = Math.max(1, Math.min(id === 'instruction' ? (h <= 140 ? 3 : 4) : 2, room));
+        const lines = wrapLines(ctx, text, maxWidth, maxLines);
+        let widest = 8;
+        lines.forEach(line => { widest = Math.max(widest, ctx.measureText(line).width); });
+        return { id, x, y, w: widest, h: Math.max(size, lines.length * lineHeight), lines, size, bold };
+    }
+
+    function measureArrow(cue, options, positions, w, h) {
+        if (!options.arrow || !positions.arrow) return null;
+        const arrowSize = Math.max(28, Math.round(Math.min(h * 0.62, w * 0.34) * Math.min(options.scale, 1.15)));
+        const cx = Math.max(arrowSize / 2, Math.min(w - arrowSize / 2, positions.arrow.x * w));
+        const cy = Math.max(arrowSize / 2, Math.min(h - arrowSize / 2, positions.arrow.y * h));
+        return {
+            id: 'arrow',
+            x: cx - arrowSize / 2,
+            y: cy - arrowSize / 2,
+            w: arrowSize,
+            h: arrowSize,
+            cx,
+            cy,
+            drawSize: arrowSize * 0.82,
+            maneuver: cue.maneuver || 'straight'
+        };
+    }
+
+    function measureParts(ctx, cue, options, positions, w, h) {
         const compact = h <= 140;
         const scale = options.scale;
         const distanceSize = Math.max(16, Math.round((compact ? h * 0.24 : h * 0.22) * scale));
         const instructionSize = Math.max(12, Math.round((compact ? h * 0.13 : h * 0.075) * scale));
         const footerSize = Math.max(11, Math.round((compact ? 11 : h * 0.055) * scale));
-        const boxes = [];
+        const instructionDrawSize = options.distance && cue.distanceText
+            ? instructionSize
+            : Math.max(instructionSize, Math.round(distanceSize * 0.72));
+        return {
+            arrow: measureArrow(cue, options, positions, w, h),
+            distance: measureTextPart(ctx, 'distance', partText('distance', cue, options), distanceSize, true, positions, options, w, h),
+            instruction: measureTextPart(ctx, 'instruction', partText('instruction', cue, options), instructionDrawSize, true, positions, options, w, h),
+            time: measureTextPart(ctx, 'time', partText('time', cue, options), footerSize, false, positions, options, w, h),
+            remain: measureTextPart(ctx, 'remain', partText('remain', cue, options), footerSize, false, positions, options, w, h)
+        };
+    }
+
+    function paintMeasured(ctx, id, part, ink, options) {
+        if (!part) return;
+        if (id === 'arrow') {
+            drawArrow(ctx, part.maneuver, part.cx, part.cy, part.drawSize, ink);
+            return;
+        }
         ctx.fillStyle = ink;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
+        ctx.font = `${part.bold ? 'bold ' : ''}${part.size}px ${fontFamily(options)}`;
+        part.lines.forEach((line, index) => ctx.fillText(line, part.x, part.y + index * (part.size + 2)));
+    }
 
-        function placeText(id, text, size, bold) {
-            const spot = positions[id];
-            if (!spot || !text) return;
-            const family = options.font.includes(' ') ? `"${options.font}"` : options.font;
-            ctx.font = `${bold ? 'bold ' : ''}${size}px ${family}`;
-            const x = Math.max(4, Math.min(w - 12, spot.x * w));
-            const y = Math.max(4, Math.min(h - size - 4, spot.y * h));
-            const maxWidth = Math.max(24, w - x - 6);
-            const lineHeight = size + 2;
-            const room = Math.max(1, Math.floor((h - y - 4) / lineHeight));
-            const maxLines = Math.max(1, Math.min(id === 'instruction' ? (compact ? 3 : 4) : 2, room));
-            const lines = wrapLines(ctx, text, maxWidth, maxLines);
-            let widest = 8;
-            lines.forEach((line, index) => {
-                ctx.fillText(line, x, y + index * lineHeight);
-                widest = Math.max(widest, ctx.measureText(line).width);
-            });
-            boxes.push({ id, x, y, w: widest, h: Math.max(size, lines.length * lineHeight) });
-        }
-
-        if (options.arrow && positions.arrow) {
-            const arrowSize = Math.max(28, Math.round(Math.min(h * 0.62, w * 0.34) * Math.min(scale, 1.15)));
-            const cx = Math.max(arrowSize / 2, Math.min(w - arrowSize / 2, positions.arrow.x * w));
-            const cy = Math.max(arrowSize / 2, Math.min(h - arrowSize / 2, positions.arrow.y * h));
-            drawArrow(ctx, cue.maneuver, cx, cy, arrowSize * 0.82, ink);
-            boxes.push({
-                id: 'arrow',
-                x: cx - arrowSize / 2,
-                y: cy - arrowSize / 2,
-                w: arrowSize,
-                h: arrowSize
-            });
-        }
-        if (options.distance) placeText('distance', cue.distanceText, distanceSize, true);
-        if (options.instruction) placeText('instruction', cue.instruction, options.distance && cue.distanceText ? instructionSize : Math.max(instructionSize, Math.round(distanceSize * 0.72)), true);
-        if (cue.placeText && (options.time || options.remain)) {
-            placeText('time', cue.placeText, footerSize, false);
-        } else {
-            const timeLabel = options.time ? (cue.timeText || (!cue.remainText ? cue.footer : '')) : '';
-            if (timeLabel) placeText('time', timeLabel, footerSize, false);
-            if (options.remain) placeText('remain', cue.remainText, footerSize, false);
-        }
-
-        placedBoxes = boxes;
+    function snapPixels(ctx, x, y, width, height, canvasW, canvasH) {
+        x = Math.max(0, Math.floor(x));
+        y = Math.max(0, Math.floor(y));
+        width = Math.min(canvasW - x, Math.ceil(width));
+        height = Math.min(canvasH - y, Math.ceil(height));
+        if (width <= 0 || height <= 0) return;
         // The panel treats any pixel above 0 as white, so gray antialiasing
-        // would vanish. Snap the card to pure black and white first.
-        const image = ctx.getImageData(0, 0, w, h);
+        // would vanish. Snap the touched region to pure black and white.
+        const image = ctx.getImageData(x, y, width, height);
         const data = image.data;
         for (let i = 0; i < data.length; i += 4) {
             const dark = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114 < 170;
@@ -412,8 +504,138 @@
             data[i] = data[i + 1] = data[i + 2] = value;
             data[i + 3] = 255;
         }
-        ctx.putImageData(image, 0, 0);
-        return canvas;
+        ctx.putImageData(image, x, y);
+    }
+
+    function rememberBoxes(measured) {
+        partBoxes = {};
+        placedBoxes = [];
+        PARTS.forEach(id => {
+            const part = measured[id];
+            if (!part) {
+                partBoxes[id] = null;
+                return;
+            }
+            const box = { id, x: part.x, y: part.y, w: part.w, h: part.h };
+            partBoxes[id] = box;
+            placedBoxes.push(box);
+        });
+    }
+
+    function rebuildFrame(w, h, paper) {
+        navFrame = document.createElement('canvas');
+        navFrame.width = w;
+        navFrame.height = h;
+        framePaper = paper;
+        partBoxes = {};
+        const ctx = navFrame.getContext('2d', { willReadFrequently: true });
+        ctx.fillStyle = paper;
+        ctx.fillRect(0, 0, w, h);
+        return ctx;
+    }
+
+    function paintAll(cue) {
+        const { w, h } = panelSize();
+        const options = displayState();
+        const { ink, paper } = colorsOf(options);
+        const ctx = rebuildFrame(w, h, paper);
+        const measured = measureParts(ctx, cue, options, activePositions(), w, h);
+        PARTS.forEach(id => paintMeasured(ctx, id, measured[id], ink, options));
+        snapPixels(ctx, 0, 0, w, h, w, h);
+        rememberBoxes(measured);
+        partSig = signaturesFor(cue);
+    }
+
+    function clearBox(ctx, box, paper, w, h) {
+        const area = padBox(box);
+        const x = Math.max(0, Math.floor(area.x));
+        const y = Math.max(0, Math.floor(area.y));
+        const right = Math.min(w, Math.ceil(area.x + area.w));
+        const bottom = Math.min(h, Math.ceil(area.y + area.h));
+        if (right <= x || bottom <= y) return null;
+        ctx.fillStyle = paper;
+        ctx.fillRect(x, y, right - x, bottom - y);
+        return { x, y, w: right - x, h: bottom - y };
+    }
+
+    function refreshParts(cue, ids) {
+        if (!Array.isArray(ids)) {
+            paintAll(cue);
+            return;
+        }
+        const { w, h } = panelSize();
+        const options = displayState();
+        const { ink, paper } = colorsOf(options);
+        if (!navFrame || navFrame.width !== w || navFrame.height !== h || framePaper !== paper) {
+            paintAll(cue);
+            return;
+        }
+        const ctx = navFrame.getContext('2d', { willReadFrequently: true });
+        const measured = measureParts(ctx, cue, options, activePositions(), w, h);
+        const regions = [];
+        ids.forEach(id => {
+            const cleared = partBoxes[id] ? clearBox(ctx, partBoxes[id], paper, w, h) : null;
+            if (cleared) regions.push(cleared);
+            if (measured[id]) regions.push(padBox(measured[id]));
+        });
+        const redraw = new Set(ids);
+        PARTS.forEach(id => {
+            const part = measured[id];
+            if (!part) return;
+            const box = { x: part.x, y: part.y, w: part.w, h: part.h };
+            if (regions.some(region => intersects(padBox(box), region))) redraw.add(id);
+        });
+        PARTS.forEach(id => {
+            if (redraw.has(id)) paintMeasured(ctx, id, measured[id], ink, options);
+        });
+        redraw.forEach(id => {
+            if (measured[id]) regions.push(padBox(measured[id]));
+        });
+        if (regions.length) {
+            let x0 = w;
+            let y0 = h;
+            let x1 = 0;
+            let y1 = 0;
+            regions.forEach(region => {
+                x0 = Math.min(x0, region.x);
+                y0 = Math.min(y0, region.y);
+                x1 = Math.max(x1, region.x + region.w);
+                y1 = Math.max(y1, region.y + region.h);
+            });
+            snapPixels(ctx, x0 - 2, y0 - 2, x1 - x0 + 4, y1 - y0 + 4, w, h);
+        }
+        rememberBoxes(measured);
+    }
+
+    function showCue(cue, partIds) {
+        displayedCue = cue;
+        refreshParts(cue, partIds);
+        if (navFrame) showCanvas(navFrame);
+    }
+
+    function partSendKey(id, cue) {
+        const flags = refreshFlags();
+        if (!flags[id]) return null;
+        if (id === 'arrow') return cue.maneuver || 'straight';
+        if (id === 'instruction') return cue.instruction || '';
+        if (id === 'distance') return 'd' + distanceBucket(cue.distanceMeters || 0);
+        if (id === 'remain') return 'r' + distanceBucket(cue.remainMeters || 0);
+        if (id === 'time') return 't' + Math.max(0, Math.round((cue.timeSeconds || 0) / 60));
+        return null;
+    }
+
+    function partsDueForSend(cue) {
+        return PARTS.filter(id => {
+            const key = partSendKey(id, cue);
+            return key !== null && sentPartKeys[id] !== key;
+        });
+    }
+
+    function rememberSendKeys(cue) {
+        PARTS.forEach(id => {
+            const key = partSendKey(id, cue);
+            if (key !== null) sentPartKeys[id] = key;
+        });
     }
 
     function showCanvas(canvas) {
@@ -424,18 +646,16 @@
         preview.getContext('2d').drawImage(canvas, 0, 0);
     }
 
-    function showCue(cue) {
-        displayedCue = cue;
-        showCanvas(renderCue(cue));
-    }
-
     function sampleCue() {
         return {
             maneuver: 'turn-left',
             instruction: 'Rẽ trái vào đường Nguyễn Huệ',
             distanceText: '120 m',
+            distanceMeters: 120,
             timeText: 'Còn 18 phút',
+            timeSeconds: 18 * 60,
             remainText: '4.6 km',
+            remainMeters: 4600,
             footer: 'Còn 18 phút · 4.6 km'
         };
     }
@@ -511,8 +731,11 @@
             maneuver: arrived ? 'arrive' : inferManeuver(step.maneuver, step.instruction),
             instruction: arrived ? 'Đã đến nơi' : step.instruction,
             distanceText: arrived ? '' : formatDistance(remainMeters),
+            distanceMeters: arrived ? 0 : remainMeters,
             timeText: arrived ? '' : `Còn ${formatDuration(seconds)}`,
+            timeSeconds: arrived ? 0 : seconds,
             remainText: arrived ? '' : formatDistance(meters),
+            remainMeters: arrived ? 0 : meters,
             placeText: arrived ? destinationText : '',
             footer: arrived ? destinationText : `Còn ${formatDuration(seconds)} · ${formatDistance(meters)}`
         };
@@ -539,14 +762,10 @@
         return Math.round(meters / 500) * 500;
     }
 
-    function uploadKey(index, remainMeters) {
-        const distanceUpdates = $('nav-distance-updates')?.checked;
-        return distanceUpdates ? `${index}:${distanceBucket(remainMeters)}` : String(index);
-    }
-
-    async function sendCurrentPreview() {
+    async function sendCurrentPreview(partIds) {
         if (!displayedCue) showCue(sampleCue());
-        const canvas = renderCue(displayedCue);
+        else if (!navFrame) showCue(displayedCue);
+        const canvas = navFrame;
         if (sending || window.countdownOperationBusy || clockImageUploadBusy || da14585ModeSwitchBusy)
             throw new Error('Đang có thao tác Bluetooth khác. Hãy đợi xong rồi gửi lại.');
         if (typeof gattServer === 'undefined' || !gattServer?.connected)
@@ -563,10 +782,13 @@
             target.height = canvas.height;
             target.getContext('2d').drawImage(canvas, 0, 0);
             if (typeof resetQuickEditorOverlay === 'function') resetQuickEditorOverlay(true);
-            setStatus('Đang gửi mặt chỉ đường lên e-ink...');
+            const partial = Array.isArray(partIds) && partIds.length && partIds.length < PARTS.length;
+            const names = partial ? partIds.map(id => PART_LABELS[id]).join(', ') : '';
+            setStatus(partial ? `Đang làm mới ${names}...` : 'Đang gửi mặt chỉ đường lên e-ink...');
             await upload_image();
-            setStatus('Đã gửi mặt chỉ đường.');
-            if (typeof addLog === 'function') addLog('Chỉ đường: đã gửi một mặt lên e-ink.');
+            setStatus(partial ? `Đã làm mới ${names}.` : 'Đã gửi mặt chỉ đường.');
+            if (typeof addLog === 'function')
+                addLog(partial ? `Chỉ đường: đã làm mới ${names}.` : 'Chỉ đường: đã gửi một mặt lên e-ink.');
         } finally {
             sending = false;
             clockImageUploadBusy = false;
@@ -761,7 +983,7 @@
         if (!nextSteps.length) throw new Error('Lộ trình không có bước chỉ dẫn.');
         steps = nextSteps;
         stepIndex = 0;
-        lastUploadKey = '';
+        sentPartKeys = {};
         offRouteFixes = 0;
         renderStepList(0);
     }
@@ -791,12 +1013,14 @@
         const active = locate(here);
         stepIndex = active.index;
         const cue = cueFor(stepIndex, active.remain);
-        showCue(cue);
+        const previewIds = changedPartIds(cue);
+        if (previewIds.length) showCue(cue, previewIds);
+        else displayedCue = cue;
         renderStepList(stepIndex);
-        const key = uploadKey(stepIndex, active.remain);
-        const changed = forceUpload || key !== lastUploadKey;
+        const einkIds = partsDueForSend(cue);
+        const shouldSend = forceUpload || einkIds.length > 0;
         const einkReady = typeof gattServer !== 'undefined' && gattServer?.connected;
-        if (sending || !changed) {
+        if (sending || !shouldSend) {
             setStatus(`${cue.distanceText} · ${cue.instruction}`);
             return;
         }
@@ -805,8 +1029,8 @@
             return;
         }
         try {
-            await sendCurrentPreview();
-            lastUploadKey = key;
+            await sendCurrentPreview(forceUpload ? null : einkIds);
+            rememberSendKeys(cue);
         } catch (error) {
             setStatus(error.message || String(error), true);
             if (typeof addLog === 'function') addLog('Chỉ đường: ' + (error.message || error));
@@ -974,7 +1198,7 @@
             const point = canvasPoint(event, preview);
             customPositions[drag.id].x = Math.max(0, Math.min(0.96, (point.x - drag.dx) / preview.width));
             customPositions[drag.id].y = Math.max(0, Math.min(0.92, (point.y - drag.dy) / preview.height));
-            showCue(displayedCue || sampleCue());
+            showCue(displayedCue || sampleCue(), [drag.id]);
         });
         const endDrag = () => {
             if (!drag) return;
@@ -988,6 +1212,10 @@
 
     window.refreshNavPreview = function () {
         showCue(displayedCue || sampleCue());
+    };
+
+    window.refreshNavParts = function (ids, cue) {
+        showCue(cue || displayedCue || sampleCue(), Array.isArray(ids) ? ids : null);
     };
 
     window.showNavOnEink = async function (cue, send = false) {

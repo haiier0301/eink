@@ -1513,7 +1513,7 @@
             #tab-nav .nav-card { margin-bottom: 12px; padding: 14px; border: 1px solid #d7e0f5; border-radius: 12px; background: #f8faff; }
             #tab-nav label { display: block; margin-bottom: 10px; font-weight: 600; }
             #tab-nav input[type="checkbox"] { width: auto; min-height: 0; margin-right: 8px; }
-            #nav-preview { display: block; width: 100%; max-width: 500px; height: auto; margin: 8px auto 0; border: 1px solid #111; background: #fff; image-rendering: pixelated; touch-action: none; cursor: grab; }
+            #nav-preview { display: block; width: 100%; max-width: 500px; height: auto; margin: 8px auto 0; background: #fff; image-rendering: pixelated; touch-action: none; cursor: grab; }
             #nav-preview.dragging { cursor: grabbing; }
             #nav-layout-hint { margin-top: 8px; font-size: 14px; }
             #nav-status { min-height: 22px; margin-top: 10px; font-weight: 600; }
@@ -1523,12 +1523,13 @@
             #nav-suggestions button { width: 100%; margin: 0; text-align: left; background: #fff; color: #1f2937; border-radius: 0; box-shadow: none; }
             #nav-display { margin: 4px 0 12px; padding: 8px 12px 10px; border: 1px solid #d7e0f5; border-radius: 8px; background: #fff; }
             #nav-display legend { padding: 0 6px; font-weight: 700; }
-            #nav-display-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
-            #nav-display-grid .nav-span { grid-column: 1 / -1; }
-            @media (max-width: 560px) { #nav-display-grid { grid-template-columns: 1fr; } }
+            #nav-display-grid, .nav-display-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+            #nav-display-grid .nav-span, .nav-display-grid .nav-span { grid-column: 1 / -1; }
+            #nav-refresh { margin: 8px 0 0; padding: 8px 10px 2px; border: 1px solid #e1e7f5; border-radius: 8px; }
+            @media (max-width: 560px) { #nav-display-grid, .nav-display-grid { grid-template-columns: 1fr; } }
         </style>
         <h2>Chỉ đường lên e-ink</h2>
-        <p>Trang lấy GPS, hỏi lộ trình Vietmap theo xe máy hoặc ô tô, vẽ bước rẽ rồi gửi bằng ảnh Bluetooth. E-ink refresh chậm, nên màn chỉ nhận ảnh mới khi hướng rẽ đổi. Vietmap không có kẹt xe trực tiếp.</p>
+        <p>Trang lấy GPS, hỏi lộ trình Vietmap theo xe máy hoặc ô tô, vẽ bước rẽ rồi gửi bằng ảnh Bluetooth. E-ink refresh chậm. Mũi tên, khoảng cách, tên đường, thời gian và quãng đường là năm phần riêng: mặt xem thử chỉ vẽ lại phần vừa đổi, và e-ink chỉ nhận phần nào được bật làm mới. Vietmap không có kẹt xe trực tiếp.</p>
         <p>Mở trang bằng Chrome trên điện thoại Android, qua địa chỉ https. iPhone và file mở trực tiếp không kết nối được Bluetooth. Trước khi đi: kết nối e-ink ở tab cài đặt, cho phép Chrome lấy vị trí, rồi dán Services key.</p>
         <div class="nav-card">
             <label for="nav-api-key">Khóa Vietmap (Services key)
@@ -1545,7 +1546,6 @@
                     <option value="car">Ô tô</option>
                 </select>
             </label>
-            <label><input id="nav-distance-updates" type="checkbox"> Gửi lại lên e-ink khi khoảng cách qua mốc mới</label>
             <fieldset id="nav-display">
                 <legend>Mặt trên e-ink</legend>
                 <div id="nav-display-grid">
@@ -1579,6 +1579,16 @@
                         </select>
                     </label>
                 </div>
+                <fieldset id="nav-refresh">
+                    <legend>Làm mới từng phần lên e-ink</legend>
+                    <div class="nav-display-grid">
+                        <label><input id="nav-refresh-arrow" type="checkbox" checked> Mũi tên khi hướng đổi</label>
+                        <label><input id="nav-refresh-distance" type="checkbox"> Khoảng cách khi qua mốc</label>
+                        <label><input id="nav-refresh-instruction" type="checkbox" checked> Tên đường khi đổi</label>
+                        <label><input id="nav-refresh-time" type="checkbox"> Thời gian khi đổi phút</label>
+                        <label><input id="nav-refresh-remain" type="checkbox"> Quãng đường khi qua mốc</label>
+                    </div>
+                </fieldset>
             </fieldset>
             <div class="button-group">
                 <button id="nav-start" type="button">Bắt đầu chỉ đường</button>
